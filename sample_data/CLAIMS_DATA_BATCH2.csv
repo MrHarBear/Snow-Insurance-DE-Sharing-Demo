@@ -1,0 +1,51 @@
+POLICY_NUMBER,INCIDENT_DATE,INCIDENT_TYPE,INCIDENT_SEVERITY,AUTHORITIES_CONTACTED,INCIDENT_HOUR_OF_THE_DAY,NUMBER_OF_VEHICLES_INVOLVED,BODILY_INJURIES,WITNESSES,POLICE_REPORT_AVAILABLE,CLAIM_AMOUNT,FRAUD_REPORTED
+100001,2015-03-02 00:00:00.000,Single Vehicle Collision,Minor Damage,Police,14,1,0,2,YES,45320,false
+100002,2015-03-03 00:00:00.000,Multi-vehicle Collision,Major Damage,Ambulance,9,3,1,3,NO,67890,true
+100003,2015-03-04 00:00:00.000,Vehicle Theft,Trivial Damage,Police,2,1,0,1,YES,4200,false
+100004,2015-03-05 00:00:00.000,Parked Car,Minor Damage,,16,1,1,2,NO,8500,false
+100005,2015-03-06 00:00:00.000,Single Vehicle Collision,Total Loss,Fire,22,1,2,1,YES,89400,true
+100006,2015-03-07 00:00:00.000,Multi-vehicle Collision,Major Damage,Police,13,4,2,2,?,71200,false
+100007,2015-03-08 00:00:00.000,Single Vehicle Collision,Minor Damage,Other,7,1,0,3,NO,52300,false
+100008,2015-03-09 00:00:00.000,Vehicle Theft,Minor Damage,,19,1,1,0,YES,6800,true
+100009,2015-03-10 00:00:00.000,Multi-vehicle Collision,Total Loss,Ambulance,11,3,1,2,NO,95600,false
+100010,2015-03-11 00:00:00.000,Parked Car,Trivial Damage,Police,5,1,0,1,YES,3400,false
+100011,2015-03-12 00:00:00.000,Single Vehicle Collision,Major Damage,Fire,18,1,1,3,NO,78900,true
+100012,2015-03-13 00:00:00.000,Multi-vehicle Collision,Minor Damage,Police,15,2,2,1,YES,34600,false
+100013,2015-03-14 00:00:00.000,Vehicle Theft,Minor Damage,Other,3,1,0,2,?,7200,false
+100014,2015-03-15 00:00:00.000,Single Vehicle Collision,Total Loss,Ambulance,21,1,2,2,NO,102300,true
+100015,2015-03-16 00:00:00.000,Multi-vehicle Collision,Major Damage,Fire,8,3,1,0,YES,65400,false
+100016,2015-03-17 00:00:00.000,Parked Car,Minor Damage,,12,1,1,3,NO,5900,false
+100017,2015-03-18 00:00:00.000,Single Vehicle Collision,Minor Damage,Police,6,1,0,2,YES,41200,false
+100018,2015-03-19 00:00:00.000,Multi-vehicle Collision,Total Loss,Other,17,4,2,3,NO,87300,true
+100019,2015-03-20 00:00:00.000,Vehicle Theft,Trivial Damage,Police,4,1,1,1,?,4800,false
+100020,2015-03-21 00:00:00.000,Single Vehicle Collision,Major Damage,Ambulance,20,1,1,2,YES,59700,true
+100021,2015-03-22 00:00:00.000,Multi-vehicle Collision,Minor Damage,Fire,10,2,0,3,NO,38900,false
+100022,2015-03-23 00:00:00.000,Parked Car,Minor Damage,Police,14,1,2,1,YES,7300,false
+100023,2015-03-24 00:00:00.000,Single Vehicle Collision,Total Loss,Other,23,1,1,0,NO,94800,true
+100024,2015-03-25 00:00:00.000,Multi-vehicle Collision,Major Damage,Police,1,3,2,2,?,76500,false
+100025,2015-03-26 00:00:00.000,Vehicle Theft,Minor Damage,,16,1,0,3,YES,5400,true
+100026,2015-03-27 00:00:00.000,Single Vehicle Collision,Minor Damage,Ambulance,11,1,1,1,NO,47800,false
+100027,2015-03-28 00:00:00.000,Multi-vehicle Collision,Total Loss,Fire,19,3,1,2,YES,89100,true
+100028,2015-03-29 00:00:00.000,Parked Car,Trivial Damage,,7,1,0,0,NO,2900,false
+100029,2015-03-30 00:00:00.000,Single Vehicle Collision,Major Damage,Police,13,1,2,3,YES,68200,true
+100030,2015-03-31 00:00:00.000,Multi-vehicle Collision,Minor Damage,Other,9,2,1,1,NO,42100,false
+100031,2015-04-01 00:00:00.000,Vehicle Theft,Minor Damage,Police,5,1,1,2,?,6700,false
+100032,2015-04-02 00:00:00.000,Single Vehicle Collision,Total Loss,Ambulance,22,1,0,3,YES,97200,true
+100033,2015-04-03 00:00:00.000,Multi-vehicle Collision,Major Damage,Fire,15,4,2,0,NO,73600,false
+100034,2015-04-04 00:00:00.000,Parked Car,Minor Damage,Police,8,1,1,2,YES,8900,false
+100035,2015-04-05 00:00:00.000,Single Vehicle Collision,Minor Damage,Other,18,1,0,1,NO,39500,false
+100036,2015-04-06 00:00:00.000,Multi-vehicle Collision,Total Loss,Police,12,3,1,3,?,91800,true
+100037,2015-04-07 00:00:00.000,Vehicle Theft,Trivial Damage,,6,1,2,0,YES,3800,false
+100038,2015-04-08 00:00:00.000,Single Vehicle Collision,Major Damage,Ambulance,21,1,1,2,NO,64900,true
+100039,2015-04-09 00:00:00.000,Multi-vehicle Collision,Minor Damage,Fire,4,2,0,3,YES,36700,false
+100040,2015-04-10 00:00:00.000,Parked Car,Minor Damage,Other,17,1,1,1,NO,6200,false
+100041,2015-04-11 00:00:00.000,Single Vehicle Collision,Total Loss,Police,14,1,2,2,YES,105600,true
+100042,2015-04-12 00:00:00.000,Multi-vehicle Collision,Major Damage,Ambulance,3,3,1,0,NO,79400,false
+100043,2015-04-13 00:00:00.000,Vehicle Theft,Minor Damage,Police,20,1,0,3,?,7900,true
+100044,2015-04-14 00:00:00.000,Single Vehicle Collision,Minor Damage,Fire,10,1,1,2,YES,44300,false
+100045,2015-04-15 00:00:00.000,Multi-vehicle Collision,Total Loss,Other,16,4,2,1,NO,88700,true
+100046,2015-04-16 00:00:00.000,Parked Car,Trivial Damage,,11,1,0,0,YES,3100,false
+100047,2015-04-17 00:00:00.000,Single Vehicle Collision,Major Damage,Police,7,1,1,3,NO,69800,true
+100048,2015-04-18 00:00:00.000,Multi-vehicle Collision,Minor Damage,Ambulance,19,2,2,2,?,35200,false
+100049,2015-04-19 00:00:00.000,Vehicle Theft,Minor Damage,Fire,2,1,0,1,YES,5800,false
+100050,2015-04-20 00:00:00.000,Single Vehicle Collision,Total Loss,Other,23,1,2,3,NO,98300,true 
