@@ -62,8 +62,8 @@ def get_connection():
         return None
 
 @st.cache_data(ttl=30)  # Refresh every 30 seconds for pipeline monitoring
-def get_quality_metrics():
-    """Fetch latest data quality metrics"""
+def get_dmf_results():
+    """Fetch latest DMF monitoring results"""
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
@@ -73,17 +73,38 @@ def get_quality_metrics():
     USE SCHEMA RAW_DATA;
     
     SELECT 
-        CHECK_ID,
-        TABLE_NAME,
-        CHECK_TYPE,
-        CHECK_DESCRIPTION,
-        RECORD_COUNT,
-        FAILED_COUNT,
-        PASS_RATE,
-        QUALITY_SCORE,
-        CHECK_TIMESTAMP
-    FROM DATA_QUALITY_METRICS
-    ORDER BY CHECK_TIMESTAMP DESC;
+        change_commit_time,
+        measurement_time,
+        table_database,
+        table_schema,
+        table_name,
+        metric_name,
+        value,
+        CASE 
+            WHEN metric_name LIKE '%NULL_COUNT' AND value = 0 THEN 'EXCELLENT'
+            WHEN metric_name LIKE '%NULL_COUNT' AND value <= 5 THEN 'GOOD'
+            WHEN metric_name LIKE '%NULL_COUNT' AND value <= 20 THEN 'FAIR'
+            WHEN metric_name LIKE '%NULL_COUNT' THEN 'NEEDS ATTENTION'
+            WHEN metric_name LIKE '%DUPLICATE_COUNT' AND value = 0 THEN 'EXCELLENT'
+            WHEN metric_name LIKE '%DUPLICATE_COUNT' AND value <= 2 THEN 'GOOD'
+            WHEN metric_name LIKE '%DUPLICATE_COUNT' THEN 'NEEDS ATTENTION'
+            WHEN metric_name LIKE 'INVALID_%' AND value = 0 THEN 'EXCELLENT'
+            WHEN metric_name LIKE 'INVALID_%' AND value <= 3 THEN 'GOOD'
+            WHEN metric_name LIKE 'INVALID_%' THEN 'NEEDS ATTENTION'
+            ELSE 'MONITORING'
+        END as quality_status,
+        CASE
+            WHEN metric_name LIKE '%NULL_COUNT' THEN 'Completeness'
+            WHEN metric_name LIKE '%DUPLICATE_COUNT' THEN 'Uniqueness'
+            WHEN metric_name LIKE 'INVALID_%' THEN 'Validity'
+            WHEN metric_name = 'ROW_COUNT' THEN 'Volume'
+            ELSE 'Other'
+        END as check_type
+    FROM SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_RESULTS
+    WHERE table_database = 'MOUNTAINPEAK_INSURANCE_PIPELINE_DB'
+        AND table_schema = 'RAW_DATA'
+        AND table_name IN ('CLAIMS_RAW', 'CUSTOMER_RAW')
+    ORDER BY change_commit_time DESC, table_name, metric_name;
     """
     
     try:
@@ -91,7 +112,7 @@ def get_quality_metrics():
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Error fetching quality metrics: {str(e)}")
+        st.error(f"Error fetching DMF results: {str(e)}")
         conn.close()
         return pd.DataFrame()
 
@@ -103,19 +124,6 @@ def get_pipeline_status():
         return {}
     
     queries = {
-        'overall_status': """
-            SELECT 
-                ROUND(AVG(QUALITY_SCORE), 2) as OVERALL_SCORE,
-                CASE 
-                    WHEN AVG(QUALITY_SCORE) >= 95 THEN 'EXCELLENT'
-                    WHEN AVG(QUALITY_SCORE) >= 90 THEN 'GOOD' 
-                    WHEN AVG(QUALITY_SCORE) >= 80 THEN 'FAIR'
-                    ELSE 'NEEDS ATTENTION'
-                END as QUALITY_RATING,
-                COUNT(*) as TOTAL_CHECKS,
-                SUM(FAILED_COUNT) as TOTAL_FAILURES
-            FROM DATA_QUALITY_METRICS;
-        """,
         'pipeline_summary': """
             SELECT 
                 COUNT(DISTINCT POLICY_NUMBER) as UNIQUE_POLICIES,
@@ -150,8 +158,8 @@ def get_pipeline_status():
         return {}
 
 @st.cache_data(ttl=60)
-def get_quality_trends():
-    """Fetch quality score trends for visualization"""
+def get_dmf_active_functions():
+    """Fetch active DMF functions for monitoring"""
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
@@ -161,14 +169,24 @@ def get_quality_trends():
     USE SCHEMA RAW_DATA;
     
     SELECT 
-        CHECK_TYPE,
-        TABLE_NAME,
-        QUALITY_SCORE,
-        CHECK_TIMESTAMP,
-        FAILED_COUNT,
-        RECORD_COUNT
-    FROM DATA_QUALITY_METRICS
-    ORDER BY CHECK_TIMESTAMP;
+        metric_name, 
+        ref_entity_name, 
+        schedule, 
+        schedule_status 
+    FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(
+        ref_entity_name => 'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.RAW_DATA.CLAIMS_RAW', 
+        ref_entity_domain => 'TABLE'
+    ))
+    UNION ALL
+    SELECT 
+        metric_name, 
+        ref_entity_name, 
+        schedule, 
+        schedule_status 
+    FROM TABLE(INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES(
+        ref_entity_name => 'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.RAW_DATA.CUSTOMER_RAW', 
+        ref_entity_domain => 'TABLE'
+    ));
     """
     
     try:
@@ -176,7 +194,7 @@ def get_quality_trends():
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Error fetching quality trends: {str(e)}")
+        st.error(f"Error fetching DMF functions: {str(e)}")
         conn.close()
         return pd.DataFrame()
 
@@ -212,231 +230,275 @@ st.markdown("## 📈 Pipeline Status Overview")
 
 # Fetch pipeline data
 pipeline_data = get_pipeline_status()
+dmf_data = get_dmf_results()
+
+# Calculate overall DMF quality status
+overall_score = 0
+quality_rating = "NO DATA"
+if not dmf_data.empty:
+    excellent_count = len(dmf_data[dmf_data['quality_status'] == 'EXCELLENT'])
+    good_count = len(dmf_data[dmf_data['quality_status'] == 'GOOD'])
+    total_checks = len(dmf_data)
+    
+    if total_checks > 0:
+        overall_score = ((excellent_count * 100) + (good_count * 85)) / total_checks
+        if overall_score >= 95:
+            quality_rating = "EXCELLENT"
+        elif overall_score >= 85:
+            quality_rating = "GOOD"
+        elif overall_score >= 70:
+            quality_rating = "FAIR"
+        else:
+            quality_rating = "NEEDS ATTENTION"
 
 if pipeline_data:
-    # Overall quality status
-    overall = pipeline_data.get('overall_status', pd.DataFrame())
     pipeline_summary = pipeline_data.get('pipeline_summary', pd.DataFrame()) 
     freshness = pipeline_data.get('data_freshness', pd.DataFrame())
     
-    if not overall.empty:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            score = overall.iloc[0]['OVERALL_SCORE']
-            rating = overall.iloc[0]['QUALITY_RATING']
-            color_class = f"quality-{rating.lower().replace(' ', '-')}"
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        color_class = f"quality-{quality_rating.lower().replace(' ', '-')}"
+        st.markdown(f"""
+        <div class="metric-card">
+            <h4>DMF Quality Score</h4>
+            <h2 class="{color_class}">{overall_score:.1f}%</h2>
+            <p>Status: {quality_rating}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        if not pipeline_summary.empty:
+            policies = pipeline_summary.iloc[0]['UNIQUE_POLICIES']
+            fraud_cases = pipeline_summary.iloc[0]['FRAUD_CASES']
             st.markdown(f"""
             <div class="metric-card">
-                <h4>Overall Quality Score</h4>
-                <h2 class="{color_class}">{score}%</h2>
-                <p>Status: {rating}</p>
+                <h4>Policies Processed</h4>
+                <h2 style="color: #11567F;">{policies:,}</h2>
+                <p>Fraud Cases: {fraud_cases}</p>
             </div>
             """, unsafe_allow_html=True)
-        
-        with col2:
-            if not pipeline_summary.empty:
-                policies = pipeline_summary.iloc[0]['UNIQUE_POLICIES']
-                fraud_cases = pipeline_summary.iloc[0]['FRAUD_CASES']
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h4>Policies Processed</h4>
-                    <h2 style="color: #11567F;">{policies:,}</h2>
-                    <p>Fraud Cases: {fraud_cases}</p>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        with col3:
-            if not pipeline_summary.empty:
-                avg_claim = pipeline_summary.iloc[0]['AVG_CLAIM_AMOUNT']
-                files = pipeline_summary.iloc[0]['FILES_PROCESSED']
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h4>Avg Claim Amount</h4>
-                    <h2 style="color: #11567F;">${avg_claim:,.2f}</h2>
-                    <p>Files: {files}</p>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        with col4:
-            if not freshness.empty:
-                minutes = freshness.iloc[0]['MINUTES_SINCE_LOAD']
-                status = freshness.iloc[0]['FRESHNESS_STATUS']
-                status_color = {"FRESH": "#28a745", "ACCEPTABLE": "#ffc107", "STALE": "#dc3545"}
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h4>Data Freshness</h4>
-                    <h2 style="color: {status_color.get(status, '#11567F')};">{minutes} min</h2>
-                    <p>Status: {status}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    
+    with col3:
+        if not pipeline_summary.empty:
+            avg_claim = pipeline_summary.iloc[0]['AVG_CLAIM_AMOUNT']
+            files = pipeline_summary.iloc[0]['FILES_PROCESSED']
+            st.markdown(f"""
+            <div class="metric-card">
+                <h4>Avg Claim Amount</h4>
+                <h2 style="color: #11567F;">${avg_claim:,.2f}</h2>
+                <p>Files: {files}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    with col4:
+        if not freshness.empty:
+            minutes = freshness.iloc[0]['MINUTES_SINCE_LOAD']
+            status = freshness.iloc[0]['FRESHNESS_STATUS']
+            status_color = {"FRESH": "#28a745", "ACCEPTABLE": "#ffc107", "STALE": "#dc3545"}
+            st.markdown(f"""
+            <div class="metric-card">
+                <h4>Data Freshness</h4>
+                <h2 style="color: {status_color.get(status, '#11567F')};">{minutes} min</h2>
+                <p>Status: {status}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # QUALITY METRICS DETAIL
 # -----------------------------------------------------------------------------
 
 st.markdown("---")
-st.markdown("## 🔍 Quality Metrics Detail")
+st.markdown("## 🔍 DMF Quality Metrics Detail")
 
-# Fetch quality metrics
-quality_df = get_quality_metrics()
-
-if not quality_df.empty:
+if not dmf_data.empty:
     # Quality summary by table and check type
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### Quality Score by Data Source")
-        table_summary = quality_df.groupby('TABLE_NAME').agg({
-            'QUALITY_SCORE': 'mean',
-            'FAILED_COUNT': 'sum',
-            'RECORD_COUNT': 'sum'
-        }).round(2)
+        st.markdown("### Quality Status by Data Source")
+        table_summary = dmf_data.groupby('table_name').apply(lambda x: pd.Series({
+            'total_checks': len(x),
+            'excellent': len(x[x['quality_status'] == 'EXCELLENT']),
+            'good': len(x[x['quality_status'] == 'GOOD']),
+            'needs_attention': len(x[x['quality_status'] == 'NEEDS ATTENTION'])
+        })).reset_index()
         
-        # Create bar chart for quality scores by table
+        # Create stacked bar chart
         fig_bar = px.bar(
-            x=table_summary.index,
-            y=table_summary['QUALITY_SCORE'],
-            color=table_summary['QUALITY_SCORE'],
-            color_continuous_scale='RdYlGn',
-            title="Average Quality Score by Table",
-            labels={'x': 'Table Name', 'y': 'Quality Score (%)'}
+            table_summary,
+            x='table_name',
+            y=['excellent', 'good', 'needs_attention'],
+            title="Quality Status Distribution by Table",
+            labels={'table_name': 'Table Name', 'value': 'Count of Checks'},
+            color_discrete_map={'excellent': '#28a745', 'good': '#17a2b8', 'needs_attention': '#dc3545'}
         )
-        fig_bar.update_layout(height=300, showlegend=False)
+        fig_bar.update_layout(height=300)
         st.plotly_chart(fig_bar, use_container_width=True)
     
     with col2:
-        st.markdown("### Quality Check Distribution")
-        check_summary = quality_df.groupby('CHECK_TYPE')['QUALITY_SCORE'].mean().reset_index()
+        st.markdown("### DMF Check Type Distribution")
+        check_summary = dmf_data['check_type'].value_counts().reset_index()
         
         # Create donut chart for check types
         fig_donut = px.pie(
             check_summary,
-            values='QUALITY_SCORE',
-            names='CHECK_TYPE',
+            values='count',
+            names='check_type',
             hole=0.4,
-            title="Quality Distribution by Check Type"
+            title="DMF Check Type Distribution"
         )
         fig_donut.update_layout(height=300)
         st.plotly_chart(fig_donut, use_container_width=True)
 
-    # Detailed quality metrics table
-    st.markdown("### Detailed Quality Metrics")
+    # Detailed DMF metrics table
+    st.markdown("### Detailed DMF Results")
     
     # Add filters
     col1, col2, col3 = st.columns(3)
     with col1:
-        table_filter = st.selectbox("Filter by Table", ["All"] + list(quality_df['TABLE_NAME'].unique()))
+        table_filter = st.selectbox("Filter by Table", ["All"] + list(dmf_data['table_name'].unique()))
     with col2:
-        check_filter = st.selectbox("Filter by Check Type", ["All"] + list(quality_df['CHECK_TYPE'].unique()))
+        check_filter = st.selectbox("Filter by Check Type", ["All"] + list(dmf_data['check_type'].unique()))
     with col3:
-        score_filter = st.slider("Min Quality Score", 0, 100, 0)
+        status_filter = st.selectbox("Filter by Status", ["All"] + list(dmf_data['quality_status'].unique()))
     
     # Apply filters
-    filtered_df = quality_df.copy()
+    filtered_df = dmf_data.copy()
     if table_filter != "All":
-        filtered_df = filtered_df[filtered_df['TABLE_NAME'] == table_filter]
+        filtered_df = filtered_df[filtered_df['table_name'] == table_filter]
     if check_filter != "All":
-        filtered_df = filtered_df[filtered_df['CHECK_TYPE'] == check_filter]
-    filtered_df = filtered_df[filtered_df['QUALITY_SCORE'] >= score_filter]
+        filtered_df = filtered_df[filtered_df['check_type'] == check_filter]
+    if status_filter != "All":
+        filtered_df = filtered_df[filtered_df['quality_status'] == status_filter]
     
     # Format and display table
-    display_df = filtered_df[['CHECK_ID', 'TABLE_NAME', 'CHECK_TYPE', 'CHECK_DESCRIPTION', 
-                             'QUALITY_SCORE', 'FAILED_COUNT', 'RECORD_COUNT', 'CHECK_TIMESTAMP']]
+    display_df = filtered_df[['metric_name', 'table_name', 'check_type', 'value', 
+                             'quality_status', 'measurement_time']].copy()
+    display_df.columns = ['DMF Function', 'Table', 'Check Type', 'Value', 'Status', 'Measurement Time']
     
-    # Color coding for quality scores
-    def color_quality_score(val):
-        if val >= 95:
+    # Color coding for quality status
+    def color_quality_status(val):
+        if val == 'EXCELLENT':
             return 'background-color: #d4edda; color: #155724'  # Green
-        elif val >= 90:
+        elif val == 'GOOD':
             return 'background-color: #d1ecf1; color: #0c5460'  # Blue
-        elif val >= 80:
-            return 'background-color: #fff3cd; color: #856404'  # Yellow
-        else:
+        elif val == 'NEEDS ATTENTION':
             return 'background-color: #f8d7da; color: #721c24'  # Red
+        else:
+            return 'background-color: #fff3cd; color: #856404'  # Yellow
     
-    styled_df = display_df.style.applymap(color_quality_score, subset=['QUALITY_SCORE'])
+    styled_df = display_df.style.applymap(color_quality_status, subset=['Status'])
     st.dataframe(styled_df, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# QUALITY TRENDS VISUALIZATION
+# DMF FUNCTIONS AND ANALYSIS
 # -----------------------------------------------------------------------------
 
 st.markdown("---")
-st.markdown("## 📊 Quality Trends Analysis")
+st.markdown("## 📊 DMF Functions & Analysis")
 
-trends_df = get_quality_trends()
+dmf_functions = get_dmf_active_functions()
 
-if not trends_df.empty:
-    # Quality score trends over time
-    fig_trends = px.line(
-        trends_df,
-        x='CHECK_TIMESTAMP',
-        y='QUALITY_SCORE',
-        color='CHECK_TYPE',
-        facet_col='TABLE_NAME',
-        title="Quality Score Trends Over Time",
-        labels={'CHECK_TIMESTAMP': 'Time', 'QUALITY_SCORE': 'Quality Score (%)'}
-    )
-    fig_trends.update_layout(height=400)
-    st.plotly_chart(fig_trends, use_container_width=True)
-    
-    # Failure analysis
+if not dmf_functions.empty:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### Failure Rate Analysis")
-        trends_df['FAILURE_RATE'] = (trends_df['FAILED_COUNT'] / trends_df['RECORD_COUNT']) * 100
-        
-        fig_failures = px.scatter(
-            trends_df,
-            x='RECORD_COUNT',
-            y='FAILURE_RATE',
-            color='CHECK_TYPE',
-            size='FAILED_COUNT',
-            hover_data=['TABLE_NAME', 'CHECK_TIMESTAMP'],
-            title="Failure Rate vs Record Count"
-        )
-        fig_failures.update_layout(height=300)
-        st.plotly_chart(fig_failures, use_container_width=True)
+        st.markdown("### Active DMF Functions")
+        # Display active functions with their schedules
+        for _, row in dmf_functions.iterrows():
+            table_name = row['ref_entity_name'].split('.')[-1]
+            function_name = row['metric_name']
+            schedule_status = row['schedule_status']
+            
+            status_color = "#28a745" if schedule_status == "STARTED" else "#dc3545"
+            st.markdown(f"""
+            <div style="padding: 10px; margin: 5px 0; border-left: 4px solid {status_color}; background-color: #f8f9fa;">
+                <strong>{function_name}</strong><br>
+                Table: {table_name}<br>
+                Status: <span style="color: {status_color};">{schedule_status}</span>
+            </div>
+            """, unsafe_allow_html=True)
     
     with col2:
-        st.markdown("### Quality Score Distribution")
-        fig_hist = px.histogram(
-            trends_df,
-            x='QUALITY_SCORE',
-            color='TABLE_NAME',
-            nbins=20,
-            title="Quality Score Distribution",
-            labels={'QUALITY_SCORE': 'Quality Score (%)', 'count': 'Frequency'}
+        st.markdown("### DMF Value Trends")
+        if not dmf_data.empty:
+            # Show recent DMF values over time
+            fig_trends = px.line(
+                dmf_data,
+                x='measurement_time',
+                y='value',
+                color='metric_name',
+                facet_col='table_name',
+                title="DMF Values Over Time",
+                labels={'measurement_time': 'Time', 'value': 'DMF Value'}
+            )
+            fig_trends.update_layout(height=400)
+            st.plotly_chart(fig_trends, use_container_width=True)
+
+# Quality Analysis Summary
+if not dmf_data.empty:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### Quality Status Summary")
+        status_summary = dmf_data['quality_status'].value_counts()
+        fig_status = px.bar(
+            x=status_summary.index,
+            y=status_summary.values,
+            color=status_summary.index,
+            color_discrete_map={'EXCELLENT': '#28a745', 'GOOD': '#17a2b8', 
+                               'NEEDS ATTENTION': '#dc3545', 'MONITORING': '#ffc107'},
+            title="Current Quality Status Distribution"
         )
-        fig_hist.update_layout(height=300)
-        st.plotly_chart(fig_hist, use_container_width=True)
+        fig_status.update_layout(height=300, showlegend=False)
+        st.plotly_chart(fig_status, use_container_width=True)
+    
+    with col2:
+        st.markdown("### DMF Values Distribution")
+        fig_values = px.histogram(
+            dmf_data,
+            x='value',
+            color='check_type',
+            title="DMF Values Distribution by Check Type",
+            nbins=15
+        )
+        fig_values.update_layout(height=300)
+        st.plotly_chart(fig_values, use_container_width=True)
 
 # -----------------------------------------------------------------------------
 # ALERTS AND RECOMMENDATIONS
 # -----------------------------------------------------------------------------
 
 st.markdown("---")
-st.markdown("## ⚠️ Quality Alerts & Recommendations")
+st.markdown("## ⚠️ DMF Quality Alerts & Recommendations")
 
-if not quality_df.empty:
+if not dmf_data.empty:
     # Identify issues requiring attention
-    low_quality = quality_df[quality_df['QUALITY_SCORE'] < 95]
+    issues = dmf_data[dmf_data['quality_status'] == 'NEEDS ATTENTION']
     
-    if not low_quality.empty:
+    if not issues.empty:
         st.markdown("### Issues Requiring Attention")
         
-        for _, row in low_quality.iterrows():
-            severity = "🔴 Critical" if row['QUALITY_SCORE'] < 80 else "🟡 Warning"
+        for _, row in issues.iterrows():
+            severity = "🔴 Critical" if row['value'] > 10 else "🟡 Warning"
+            function_desc = {
+                'INVALID_CLAIM_AMOUNT_COUNT': 'Claims with invalid amounts (outside $100-$500K range)',
+                'INVALID_CUSTOMER_AGE_COUNT': 'Customers with invalid ages (outside 18-100 range)',
+                'NULL_COUNT': f'Records with missing {row["metric_name"].split(".")[-1]} values',
+                'DUPLICATE_COUNT': f'Duplicate records found in {row["metric_name"].split(".")[-1]}'
+            }
+            
+            desc = function_desc.get(row['metric_name'].split('.')[-1], f'Quality issue in {row["metric_name"]}')
+            
             st.markdown(f"""
-            **{severity}**: {row['CHECK_DESCRIPTION']}
-            - Table: {row['TABLE_NAME']} | Check: {row['CHECK_TYPE']}
-            - Quality Score: {row['QUALITY_SCORE']}% | Failed Records: {row['FAILED_COUNT']}/{row['RECORD_COUNT']}
-            - Timestamp: {row['CHECK_TIMESTAMP']}
+            **{severity}**: {desc}
+            - Table: {row['table_name']} | DMF: {row['metric_name']}
+            - Issue Count: {row['value']} | Status: {row['quality_status']}
+            - Last Measured: {row['measurement_time']}
             """)
     else:
-        st.success("✅ All quality checks are passing! No issues requiring immediate attention.")
+        st.success("✅ All DMF quality checks are excellent! No issues requiring immediate attention.")
 
 # -----------------------------------------------------------------------------
 # PIPELINE HEALTH RECOMMENDATIONS
@@ -444,22 +506,31 @@ if not quality_df.empty:
 
 st.markdown("### 🔧 Pipeline Health Recommendations")
 
-if pipeline_data and not pipeline_data.get('overall_status', pd.DataFrame()).empty:
-    overall_score = pipeline_data['overall_status'].iloc[0]['OVERALL_SCORE']
-    
+if pipeline_data:
     recommendations = []
     
-    if overall_score < 90:
-        recommendations.append("📊 Consider reviewing data ingestion processes for quality improvement")
+    # Check DMF quality status
+    if not dmf_data.empty:
+        needs_attention_count = len(dmf_data[dmf_data['quality_status'] == 'NEEDS ATTENTION'])
+        if needs_attention_count > 0:
+            recommendations.append(f"🔍 {needs_attention_count} DMF checks need attention - investigate data quality issues")
     
+    # Check data freshness
     if not freshness.empty and freshness.iloc[0]['FRESHNESS_STATUS'] == 'STALE':
         recommendations.append("⏰ Data pipeline may need attention - last update was over 2 hours ago")
     
-    if not quality_df.empty and quality_df['FAILED_COUNT'].sum() > 0:
-        recommendations.append("🔍 Investigate failed quality checks to identify root causes")
+    # Check DMF function status
+    if not dmf_functions.empty:
+        stopped_functions = dmf_functions[dmf_functions['schedule_status'] != 'STARTED']
+        if not stopped_functions.empty:
+            recommendations.append(f"⚙️ {len(stopped_functions)} DMF functions are not running - check monitoring schedule")
+    
+    # Overall health check
+    if overall_score < 85:
+        recommendations.append("📊 Overall DMF quality score is below optimal - review data ingestion processes")
     
     if len(recommendations) == 0:
-        recommendations.append("✅ Pipeline is running optimally - continue monitoring")
+        recommendations.append("✅ Pipeline is running optimally with excellent DMF monitoring - continue monitoring")
     
     for rec in recommendations:
         st.markdown(f"- {rec}")
@@ -471,7 +542,8 @@ if pipeline_data and not pipeline_data.get('overall_status', pd.DataFrame()).emp
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #5B5B5B; padding: 20px;'>
-    <p><strong>MountainPeak Insurance - Data Quality Monitor</strong></p>
-    <p>Powered by Snowflake • Real-time Pipeline Monitoring • Automated Quality Assurance</p>
+    <p><strong>MountainPeak Insurance - DMF Quality Monitor</strong></p>
+    <p>Powered by Snowflake DMFs • Real-time Pipeline Monitoring • Automated Quality Assurance</p>
+    <p>Monitoring: 6 Data Metric Functions (2 Custom + 4 System) across Claims & Customer tables</p>
 </div>
 """, unsafe_allow_html=True) 

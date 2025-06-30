@@ -11,7 +11,6 @@ Location: Insurance_Data_Sharing_Demo folder - separate from main setup
 
 -- Enable Cortex for classification capabilities
 USE ROLE ACCOUNTADMIN;
-ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'ANY_REGION';
 
 -- Clean start for demo consistency
 DROP DATABASE IF EXISTS MOUNTAINPEAK_INSURANCE_PIPELINE_DB;
@@ -104,12 +103,15 @@ CREATE OR REPLACE API INTEGRATION INSURANCE_PIPELINE_GIT_INTEGRATION
 -- Connect to demo repository
 CREATE OR REPLACE GIT REPOSITORY INSURANCE_PIPELINE_DEMO_REPO
     API_INTEGRATION = INSURANCE_PIPELINE_GIT_INTEGRATION
-    ORIGIN = 'https://github.com/MrHarBear/Snowflake-Insurance-data-sharing.git'
+    ORIGIN = 'https://github.com/MrHarBear/Snow-Insurance-DE-Sharing-Demo.git'
     GIT_CREDENTIALS = NULL
     COMMENT = 'Repository with insurance demo data';
 
 -- Refresh repository to access latest files
 ALTER GIT REPOSITORY INSURANCE_PIPELINE_DEMO_REPO FETCH;
+-- List files to verify the repository connection
+SHOW GIT BRANCHES IN GIT REPOSITORY INSURANCE_PIPELINE_DEMO_REPO;
+LS @INSURANCE_PIPELINE_DEMO_REPO/branches/main;
 
 -- Create pipeline stages for automated operations
 CREATE OR REPLACE STAGE INSURANCE_PIPELINE_CSV_STAGE
@@ -136,19 +138,13 @@ INITIAL DATA LOADING FROM GIT
 -- Load original CSV files from Git repository
 COPY FILES
     INTO @INSURANCE_PIPELINE_CSV_STAGE
-    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/'
-    PATTERN='CLAIMS_DATA.csv';
-
+    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/sample_data/'
+    pattern='.*CLAIMS_DATA.csv';
+-- Load original CSV files from Git repository
 COPY FILES
     INTO @INSURANCE_PIPELINE_CSV_STAGE
-    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/'
-    PATTERN='CUSTOMER_DATA.csv';
-
--- Load additional demo batch files
-COPY FILES
-    INTO @INSURANCE_PIPELINE_CSV_STAGE
-    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/Insurance_Data_Sharing_Demo/sample_data/'
-    PATTERN='*.csv';
+    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/sample_data/'
+    pattern='.*CUSTOMER_DATA.csv';
 
 -- Verify files are staged
 LIST @INSURANCE_PIPELINE_CSV_STAGE;
@@ -194,67 +190,84 @@ CREATE OR REPLACE TABLE RAW_DATA.CUSTOMER_RAW (
     FILE_NAME STRING DEFAULT 'INITIAL_LOAD'
 ) COMMENT = 'Raw customer data with automated pipeline tracking';
 
--- Load initial data with pipeline tracking
 COPY INTO RAW_DATA.CLAIMS_RAW 
-    (POLICY_NUMBER, INCIDENT_DATE, INCIDENT_TYPE, INCIDENT_SEVERITY, 
-     AUTHORITIES_CONTACTED, INCIDENT_HOUR_OF_THE_DAY, NUMBER_OF_VEHICLES_INVOLVED,
-     BODILY_INJURIES, WITNESSES, POLICE_REPORT_AVAILABLE, CLAIM_AMOUNT, 
-     FRAUD_REPORTED, FILE_NAME)
-FROM (
-    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 
-           METADATA$FILENAME as FILE_NAME
-    FROM @INSURANCE_PIPELINE_CSV_STAGE/CLAIMS_DATA.csv
-)
-FILE_FORMAT = (
-    TYPE = CSV,
-    SKIP_HEADER = 1,
-    FIELD_DELIMITER = ',',
-    RECORD_DELIMITER = '\n',
-    TRIM_SPACE = TRUE,
-    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE,
-    REPLACE_INVALID_CHARACTERS = TRUE,
-    DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF3',
-    TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF3'
-);
+FROM @INSURANCE_PIPELINE_CSV_STAGE/CLAIMS_DATA.csv
+FILE_FORMAT = (FORMAT_NAME = 'INSURANCE_CSV_FORMAT')
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
 
 COPY INTO RAW_DATA.CUSTOMER_RAW
-    (POLICY_NUMBER, AGE, POLICY_START_DATE, POLICY_LENGTH_MONTH,
-     POLICY_DEDUCTABLE, POLICY_ANNUAL_PREMIUM, INSURED_SEX,
-     INSURED_EDUCATION_LEVEL, INSURED_OCCUPATION, FILE_NAME)
-FROM (
-    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9,
-           METADATA$FILENAME as FILE_NAME
-    FROM @INSURANCE_PIPELINE_CSV_STAGE/CUSTOMER_DATA.csv
-)
-FILE_FORMAT = (
-    TYPE = CSV,
-    SKIP_HEADER = 1,
-    FIELD_DELIMITER = ',',
-    RECORD_DELIMITER = '\n',
-    TRIM_SPACE = TRUE,
-    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE,
-    REPLACE_INVALID_CHARACTERS = TRUE,
-    DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF3',
+FROM @INSURANCE_PIPELINE_CSV_STAGE/CUSTOMER_DATA.csv
+FILE_FORMAT = (FORMAT_NAME = 'INSURANCE_CSV_FORMAT')
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;
+
+/*
+================================================================================
+SNOWPIPE SETUP FOR AUTOMATED DATA LOADING
+================================================================================
+*/
+-- Create FILE FORMAT object for CSV processing
+CREATE OR REPLACE FILE FORMAT INSURANCE_CSV_FORMAT
+    TYPE = CSV
+    PARSE_HEADER = TRUE
+    FIELD_DELIMITER = ','
+    RECORD_DELIMITER = '\n'
+    TRIM_SPACE = TRUE
+    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+    REPLACE_INVALID_CHARACTERS = TRUE
+    DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF3'
     TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF3'
-);
+    COMMENT = 'Standard CSV format for insurance data loading';
 
+-- Create Snowpipe for automatic claims data loading
+CREATE OR REPLACE PIPE CLAIMS_DATA_PIPE
+    AUTO_INGEST = TRUE
+    AS
+    COPY INTO RAW_DATA.CLAIMS_RAW 
+    FROM @INSURANCE_PIPELINE_LANDING_STAGE
+    PATTERN = '.*CLAIMS_DATA.*\.csv'
+    FILE_FORMAT = (FORMAT_NAME = 'INSURANCE_CSV_FORMAT')
+    MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+    ON_ERROR = CONTINUE;
 
+-- Create Snowpipe for automatic customer data loading
+CREATE OR REPLACE PIPE CUSTOMER_DATA_PIPE
+    AUTO_INGEST = TRUE
+    AS
+    COPY INTO RAW_DATA.CUSTOMER_RAW
+    FROM @INSURANCE_PIPELINE_LANDING_STAGE
+    PATTERN = '.*CUSTOMER_DATA.*\.csv'
+    FILE_FORMAT = (FORMAT_NAME = 'INSURANCE_CSV_FORMAT')
+    MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+    ON_ERROR = CONTINUE;
+
+-- Check pipe status
+SELECT SYSTEM$PIPE_STATUS('CLAIMS_DATA_PIPE') as CLAIMS_PIPE_STATUS;
+SELECT SYSTEM$PIPE_STATUS('CUSTOMER_DATA_PIPE') as CUSTOMER_PIPE_STATUS;
+
+-- Manually refresh the pipes to process any existing files
+ALTER PIPE CLAIMS_DATA_PIPE REFRESH;
+ALTER PIPE CUSTOMER_DATA_PIPE REFRESH;
 
 /*
 ================================================================================
 INITIAL PRIVILEGE GRANTS
 ================================================================================
 */
+USE SECONDARY ROLES NONE;
+USE ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
+SELECT * FROM RAW_DATA.CLAIMS_RAW;
 
+USE ROLE ACCOUNTADMIN;
+SELECT * FROM RAW_DATA.CLAIMS_RAW;
+select count(1) from RAW_DATA.CLAIMS_RAW;
+USE SECONDARY ROLES ALL;
 -- Grant analyst access to all pipeline components
 GRANT SELECT, INSERT ON TABLE RAW_DATA.CLAIMS_RAW TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
 GRANT SELECT, INSERT ON TABLE RAW_DATA.CUSTOMER_RAW TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
 
-GRANT USAGE, READ ON STAGE INSURANCE_PIPELINE_CSV_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
-GRANT USAGE, READ, WRITE ON STAGE INSURANCE_PIPELINE_LANDING_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
-GRANT USAGE, READ, WRITE ON STAGE INSURANCE_PIPELINE_WORK_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
-
-
+GRANT READ ON STAGE INSURANCE_PIPELINE_CSV_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
+GRANT READ, WRITE ON STAGE INSURANCE_PIPELINE_LANDING_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
+GRANT READ, WRITE ON STAGE INSURANCE_PIPELINE_WORK_STAGE TO ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
 
 /*
 ================================================================================
@@ -279,57 +292,25 @@ SELECT
     MAX(LOAD_TIMESTAMP) as LAST_LOADED
 FROM RAW_DATA.CUSTOMER_RAW;
 
--- Pipeline health check
-SELECT 
-    'PIPELINE READINESS' as STATUS,
-    CURRENT_DATABASE() as ACTIVE_DATABASE,
-    CURRENT_SCHEMA() as ACTIVE_SCHEMA,
-    CURRENT_WAREHOUSE() as ACTIVE_WAREHOUSE,
-    CURRENT_ROLE() as ACTIVE_ROLE;
-
--- Environment summary for demo
-SELECT 
-    'PIPELINE INFRASTRUCTURE' as COMPONENT,
-    'Automated stages and Dynamic Table ready' as STATUS
-UNION ALL
-SELECT 
-    'DATA LOADING',
-    'Initial CSV data loaded with tracking'
-
-UNION ALL
-SELECT 
-    'DEMO READINESS',
-    'Ready for progressive analytics and governance';
 
 /*
 ================================================================================
-SETUP COMPLETE - AUTOMATED PIPELINE READY
+ADD NEW DATA TO SEE PIPELINE AUTOMATION
 ================================================================================
-Environment Ready:
-  • Database: MOUNTAINPEAK_INSURANCE_PIPELINE_DB with automated pipeline support
-  • Warehouses: Optimized for real-time operations
-  • Stages: Landing zone ready for file drops
-  • Tables: Initial data loaded with pipeline tracking
-  • RBAC: MOUNTAINPEAK_PIPELINE_ANALYST role configured
+*/
+-- Load original CSV files from Git repository
+COPY FILES
+    INTO @INSURANCE_PIPELINE_LANDING_STAGE
+    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/sample_data/'
+    pattern='.*CLAIMS_DATA_BATCH.*\.csv';
 
-Pipeline Demo Ready:
-  1. Drop additional CSV files into INSURANCE_PIPELINE_LANDING_STAGE
-  2. Execute simple COPY INTO commands
-  3. Watch Dynamic Tables refresh automatically
-  4. See governance policies apply to new data
+-- Load original CSV files from Git repository
+COPY FILES
+    INTO @INSURANCE_PIPELINE_LANDING_STAGE
+    FROM '@INSURANCE_PIPELINE_DEMO_REPO/branches/main/sample_data/'
+    pattern='.*CUSTOMER_DATA_.*\.csv';
 
-Demo Files Available in Repository:
-  - Insurance_Data_Sharing_Demo/sample_data/CLAIMS_DATA_BATCH2.csv
-  - Insurance_Data_Sharing_Demo/sample_data/CUSTOMER_DATA_BATCH2.csv
-  - Insurance_Data_Sharing_Demo/sample_data/CLAIMS_DATA_BATCH3.csv
-
-Next Steps:
-  1. Execute Insurance_Data_Sharing_Demo/01_DATA_QUALITY.sql for monitoring setup
-  2. Execute Insurance_Data_Sharing_Demo/02_RISK_ANALYTICS.sql for Dynamic Tables
-  3. Create governance demo script for progressive security
-  
-Quick Demo Commands:
-  -- Load additional batches using standard COPY INTO commands
-  -- Files are already staged and ready for loading
-================================================================================
-*/ 
+-- drop table RAW_DATA.CLAIMS_RAW;
+-- drop table RAW_DATA.CUSTOMER_RAW;
+-- drop stage INSURANCE_PIPELINE_CSV_STAGE;
+-- drop stage INSURANCE_PIPELINE_LANDING_STAGE;

@@ -1,43 +1,141 @@
 /*
 ================================================================================
-MOUNTAINPEAK INSURANCE - AUTOMATED RISK ANALYTICS
+MOUNTAINPEAK INSURANCE - RISK ANALYTICS & PROGRESSIVE GOVERNANCE
 ================================================================================
-Demo:    Real-time risk analytics with Dynamic Tables
-Purpose: Automated data transformations and risk scoring with live refresh
-Data:    Claims and customer data with continuous analytics updates
+Demo: Real-time risk analytics with Python UDF and progressive data sharing
+Purpose: 2-level Dynamic Tables, governance policies, and secure broker access
+Target: Alpine Risk Brokers risk intelligence with data protection
 ================================================================================
 */
 
 USE DATABASE MOUNTAINPEAK_INSURANCE_PIPELINE_DB;
 USE SCHEMA ANALYTICS;
 USE WAREHOUSE INSURANCE_PIPELINE_COMPUTE_WH;
-USE ROLE MOUNTAINPEAK_PIPELINE_ANALYST;
+USE ROLE ACCOUNTADMIN;
 
 /*
 ================================================================================
-FOUNDATIONAL DATA INTEGRATION
+SECTION 1: PYTHON UDF FOR AGE CATEGORIZATION
 ================================================================================
 */
 
--- Create integrated customer-claims dataset for analytics
+-- SQL UDF for age-based risk scoring - more efficient for simple logic
+CREATE OR REPLACE FUNCTION ANALYTICS.CALCULATE_AGE_RISK_SCORE(AGE NUMBER)
+RETURNS NUMBER
+LANGUAGE SQL
+COMMENT = 'Returns numeric risk score based on driver age'
+AS
+$$
+    CASE 
+        WHEN AGE IS NULL THEN 0
+        WHEN AGE < 25 THEN 25
+        WHEN AGE < 35 THEN 15 
+        WHEN AGE < 55 THEN 5
+        ELSE 10
+    END
+$$;
+
+-- Python UDF for standardized driver age categorization
+CREATE OR REPLACE FUNCTION ANALYTICS.CATEGORIZE_DRIVER_AGE(AGE NUMBER)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+HANDLER = 'categorize_age'
+COMMENT = 'Categorizes driver age into risk-based groups for insurance analytics'
+AS
+$$
+def categorize_age(age):
+    """
+    Categorizes driver age into standard insurance risk groups
+    Returns: Young Driver, Middle Age, Mature Driver, or Senior Driver
+    """
+    if age is None:
+        return 'Unknown'
+    elif age < 25:
+        return 'Young Driver'
+    elif age < 45:
+        return 'Middle Age'
+    elif age < 65:
+        return 'Mature Driver'
+    else:
+        return 'Senior Driver'
+$$;
+
+-- Python UDF for comprehensive risk scoring
+CREATE OR REPLACE FUNCTION ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(AGE NUMBER, CLAIM_AMOUNT NUMBER, FRAUD_REPORTED BOOLEAN)
+RETURNS NUMBER
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.11'
+HANDLER = 'calculate_total_risk'
+COMMENT = 'Calculates comprehensive risk score from age, claim amount, and fraud history'
+AS
+$$
+def calculate_total_risk(age, claim_amount, fraud_reported):
+    """
+    Calculates total risk score combining multiple factors
+    Returns: Total risk score (10-115)
+    """
+    # Age risk component
+    if age is None:
+        age_risk = 0
+    elif age < 25:
+        age_risk = 25
+    elif age < 35:
+        age_risk = 15
+    elif age < 55:
+        age_risk = 5
+    else:
+        age_risk = 10
+    
+    # Claim amount risk component
+    if claim_amount is None:
+        claim_risk = 5
+    elif claim_amount > 75000:
+        claim_risk = 40
+    elif claim_amount > 25000:
+        claim_risk = 20
+    else:
+        claim_risk = 5
+    
+    # Fraud risk component
+    fraud_risk = 50 if fraud_reported else 0
+    
+    return age_risk + claim_risk + fraud_risk
+$$;
+
+-- Test the Python UDFs
+SELECT 
+    'Python UDF Test' as TEST_TYPE,
+    ANALYTICS.CATEGORIZE_DRIVER_AGE(22) as YOUNG_DRIVER_CATEGORY,
+    ANALYTICS.CALCULATE_AGE_RISK_SCORE(22) as YOUNG_DRIVER_SCORE,
+    ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(22, 80000, TRUE) as HIGH_RISK_TOTAL,
+    ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(45, 15000, FALSE) as LOW_RISK_TOTAL;
+
+/*
+================================================================================
+SECTION 2: LEVEL 1 DYNAMIC TABLE - CUSTOMER CLAIMS INTEGRATION
+================================================================================
+*/
+
+-- Level 1: Foundational customer-claims data integration
 CREATE OR REPLACE DYNAMIC TABLE ANALYTICS.CUSTOMER_CLAIMS_INTEGRATED
     TARGET_LAG = '1 minute'
     WAREHOUSE = INSURANCE_PIPELINE_COMPUTE_WH
+    COMMENT = 'Level 1: Customer and claims data integration with derived fields'
     AS
 SELECT 
-    -- Customer information
+    -- Customer core data
     c.POLICY_NUMBER,
     c.AGE,
+    c.INSURED_SEX,
+    c.INSURED_EDUCATION_LEVEL,
+    c.INSURED_OCCUPATION,
     c.POLICY_START_DATE,
     c.POLICY_LENGTH_MONTH,
     c.POLICY_DEDUCTABLE,
     c.POLICY_ANNUAL_PREMIUM,
-    c.INSURED_SEX,
-    c.INSURED_EDUCATION_LEVEL,
-    c.INSURED_OCCUPATION,
-    c.LOAD_TIMESTAMP as CUSTOMER_LOAD_TIME,
     
-    -- Claims information
+    -- Claims data (NULL if no claims)
     cl.INCIDENT_DATE,
     cl.INCIDENT_TYPE,
     cl.INCIDENT_SEVERITY,
@@ -49,369 +147,235 @@ SELECT
     cl.POLICE_REPORT_AVAILABLE,
     cl.CLAIM_AMOUNT,
     cl.FRAUD_REPORTED,
-    cl.LOAD_TIMESTAMP as CLAIM_LOAD_TIME,
     
-    -- Derived analytics fields
-    DATEDIFF('YEAR', c.POLICY_START_DATE, cl.INCIDENT_DATE) as YEARS_POLICY_TO_INCIDENT,
+    -- Derived business fields
+    CASE WHEN cl.POLICY_NUMBER IS NOT NULL THEN 1 ELSE 0 END as HAS_CLAIM,
+    COALESCE(cl.CLAIM_AMOUNT, 0) as CLAIM_AMOUNT_FILLED,
+    COALESCE(cl.FRAUD_REPORTED, FALSE) as FRAUD_REPORTED_FILLED,
+    
+    -- Simulated customer geography for row access demo
     CASE 
-        WHEN cl.CLAIM_AMOUNT > 75000 THEN 'High Value'
-        WHEN cl.CLAIM_AMOUNT > 25000 THEN 'Medium Value'
-        ELSE 'Low Value'
-    END as CLAIM_VALUE_CATEGORY,
+        WHEN MOD(HASH(c.POLICY_NUMBER), 10) <= 2 THEN 'Colorado'
+        WHEN MOD(HASH(c.POLICY_NUMBER), 10) <= 4 THEN 'Utah'  
+        WHEN MOD(HASH(c.POLICY_NUMBER), 10) <= 6 THEN 'Wyoming'
+        ELSE 'Other States'
+    END as CUSTOMER_STATE,
     
-    CASE 
-        WHEN c.AGE < 25 THEN 'Young Driver'
-        WHEN c.AGE < 45 THEN 'Middle Age'
-        WHEN c.AGE < 65 THEN 'Mature Driver'
-        ELSE 'Senior Driver'
-    END as AGE_CATEGORY,
-    
-    -- Risk indicators
-    CASE 
-        WHEN cl.INCIDENT_HOUR_OF_THE_DAY BETWEEN 22 AND 6 THEN TRUE 
-        ELSE FALSE 
-    END as LATE_NIGHT_INCIDENT,
-    
-    CASE 
-        WHEN cl.NUMBER_OF_VEHICLES_INVOLVED > 2 THEN TRUE
-        ELSE FALSE
-    END as MULTI_VEHICLE_COMPLEX,
-    
-    -- Processing metadata
-    GREATEST(c.LOAD_TIMESTAMP, cl.LOAD_TIMESTAMP) as LAST_UPDATED
+    -- Data lineage tracking
+    GREATEST(c.LOAD_TIMESTAMP, COALESCE(cl.LOAD_TIMESTAMP, c.LOAD_TIMESTAMP)) as LAST_UPDATED
     
 FROM RAW_DATA.CUSTOMER_RAW c
-INNER JOIN RAW_DATA.CLAIMS_RAW cl 
-    ON c.POLICY_NUMBER = cl.POLICY_NUMBER;
+LEFT JOIN RAW_DATA.CLAIMS_RAW cl ON c.POLICY_NUMBER = cl.POLICY_NUMBER;
 
 /*
 ================================================================================
-REAL-TIME RISK SCORING ENGINE
+SECTION 3: LEVEL 2 DYNAMIC TABLE - RISK SCORING WITH PYTHON UDF
 ================================================================================
 */
 
--- Create comprehensive risk scoring with automatic refresh
+-- Level 2: Risk scoring using Python UDFs for efficient calculation
 CREATE OR REPLACE DYNAMIC TABLE ANALYTICS.RISK_SCORE_MATRIX
     TARGET_LAG = '1 minute'
     WAREHOUSE = INSURANCE_PIPELINE_COMPUTE_WH
+    COMMENT = 'Level 2: Risk scoring with Python UDFs for comprehensive analysis'
     AS
 SELECT 
+    -- Core identifiers and data
     POLICY_NUMBER,
     AGE,
-    AGE_CATEGORY,
+    INSURED_SEX,
+    INSURED_EDUCATION_LEVEL,
     INSURED_OCCUPATION,
-    CLAIM_AMOUNT,
-    CLAIM_VALUE_CATEGORY,
-    INCIDENT_TYPE,
-    INCIDENT_SEVERITY,
-    FRAUD_REPORTED,
+    POLICY_ANNUAL_PREMIUM,
+    CLAIM_AMOUNT_FILLED,
+    FRAUD_REPORTED_FILLED,
+    CUSTOMER_STATE,
     
-    -- Risk scoring components
+    -- Python UDF results - efficient single calculations
+    ANALYTICS.CATEGORIZE_DRIVER_AGE(AGE) as AGE_CATEGORY,
+    ANALYTICS.CALCULATE_AGE_RISK_SCORE(AGE) as AGE_RISK_SCORE,
+    ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(AGE, CLAIM_AMOUNT_FILLED, FRAUD_REPORTED_FILLED) as TOTAL_RISK_SCORE,
+    
+    -- Risk level classification using UDF result
     CASE 
-        WHEN AGE < 25 THEN 25
-        WHEN AGE < 35 THEN 15 
-        WHEN AGE < 55 THEN 5
-        ELSE 10
-    END as AGE_RISK_SCORE,
+        WHEN ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(AGE, CLAIM_AMOUNT_FILLED, FRAUD_REPORTED_FILLED) >= 80 THEN 'HIGH'
+        WHEN ANALYTICS.CALCULATE_TOTAL_RISK_SCORE(AGE, CLAIM_AMOUNT_FILLED, FRAUD_REPORTED_FILLED) >= 40 THEN 'MEDIUM'
+        ELSE 'LOW'
+    END as RISK_LEVEL,
     
-    CASE 
-        WHEN CLAIM_AMOUNT > 100000 THEN 40
-        WHEN CLAIM_AMOUNT > 50000 THEN 25
-        WHEN CLAIM_AMOUNT > 25000 THEN 15
-        ELSE 5
-    END as AMOUNT_RISK_SCORE,
-    
-    CASE 
-        WHEN INCIDENT_TYPE = 'Vehicle Theft' THEN 30
-        WHEN INCIDENT_TYPE = 'Multi-vehicle Collision' THEN 20
-        WHEN INCIDENT_TYPE = 'Single Vehicle Collision' THEN 15
-        ELSE 10
-    END as INCIDENT_TYPE_RISK_SCORE,
-    
-    CASE 
-        WHEN INCIDENT_SEVERITY = 'Total Loss' THEN 35
-        WHEN INCIDENT_SEVERITY = 'Major Damage' THEN 25
-        WHEN INCIDENT_SEVERITY = 'Minor Damage' THEN 10
-        ELSE 5
-    END as SEVERITY_RISK_SCORE,
-    
-    CASE 
-        WHEN FRAUD_REPORTED = TRUE THEN 50
-        ELSE 0
-    END as FRAUD_RISK_SCORE,
-    
-    CASE 
-        WHEN LATE_NIGHT_INCIDENT = TRUE THEN 15
-        ELSE 0
-    END as TIME_RISK_SCORE,
-    
-    CASE 
-        WHEN MULTI_VEHICLE_COMPLEX = TRUE THEN 20
-        ELSE 0
-    END as COMPLEXITY_RISK_SCORE,
-    
-    -- Composite risk calculation
-    (CASE WHEN AGE < 25 THEN 25 WHEN AGE < 35 THEN 15 WHEN AGE < 55 THEN 5 ELSE 10 END +
-     CASE WHEN CLAIM_AMOUNT > 100000 THEN 40 WHEN CLAIM_AMOUNT > 50000 THEN 25 WHEN CLAIM_AMOUNT > 25000 THEN 15 ELSE 5 END +
-     CASE WHEN INCIDENT_TYPE = 'Vehicle Theft' THEN 30 WHEN INCIDENT_TYPE = 'Multi-vehicle Collision' THEN 20 WHEN INCIDENT_TYPE = 'Single Vehicle Collision' THEN 15 ELSE 10 END +
-     CASE WHEN INCIDENT_SEVERITY = 'Total Loss' THEN 35 WHEN INCIDENT_SEVERITY = 'Major Damage' THEN 25 WHEN INCIDENT_SEVERITY = 'Minor Damage' THEN 10 ELSE 5 END +
-     CASE WHEN FRAUD_REPORTED = TRUE THEN 50 ELSE 0 END +
-     CASE WHEN LATE_NIGHT_INCIDENT = TRUE THEN 15 ELSE 0 END +
-     CASE WHEN MULTI_VEHICLE_COMPLEX = TRUE THEN 20 ELSE 0 END) as TOTAL_RISK_SCORE,
-    
-    -- Risk classification
-    CASE 
-        WHEN (CASE WHEN AGE < 25 THEN 25 WHEN AGE < 35 THEN 15 WHEN AGE < 55 THEN 5 ELSE 10 END +
-              CASE WHEN CLAIM_AMOUNT > 100000 THEN 40 WHEN CLAIM_AMOUNT > 50000 THEN 25 WHEN CLAIM_AMOUNT > 25000 THEN 15 ELSE 5 END +
-              CASE WHEN INCIDENT_TYPE = 'Vehicle Theft' THEN 30 WHEN INCIDENT_TYPE = 'Multi-vehicle Collision' THEN 20 WHEN INCIDENT_TYPE = 'Single Vehicle Collision' THEN 15 ELSE 10 END +
-              CASE WHEN INCIDENT_SEVERITY = 'Total Loss' THEN 35 WHEN INCIDENT_SEVERITY = 'Major Damage' THEN 25 WHEN INCIDENT_SEVERITY = 'Minor Damage' THEN 10 ELSE 5 END +
-              CASE WHEN FRAUD_REPORTED = TRUE THEN 50 ELSE 0 END +
-              CASE WHEN LATE_NIGHT_INCIDENT = TRUE THEN 15 ELSE 0 END +
-              CASE WHEN MULTI_VEHICLE_COMPLEX = TRUE THEN 20 ELSE 0 END) >= 80 THEN 'HIGH RISK'
-        WHEN (CASE WHEN AGE < 25 THEN 25 WHEN AGE < 35 THEN 15 WHEN AGE < 55 THEN 5 ELSE 10 END +
-              CASE WHEN CLAIM_AMOUNT > 100000 THEN 40 WHEN CLAIM_AMOUNT > 50000 THEN 25 WHEN CLAIM_AMOUNT > 25000 THEN 15 ELSE 5 END +
-              CASE WHEN INCIDENT_TYPE = 'Vehicle Theft' THEN 30 WHEN INCIDENT_TYPE = 'Multi-vehicle Collision' THEN 20 WHEN INCIDENT_TYPE = 'Single Vehicle Collision' THEN 15 ELSE 10 END +
-              CASE WHEN INCIDENT_SEVERITY = 'Total Loss' THEN 35 WHEN INCIDENT_SEVERITY = 'Major Damage' THEN 25 WHEN INCIDENT_SEVERITY = 'Minor Damage' THEN 10 ELSE 5 END +
-              CASE WHEN FRAUD_REPORTED = TRUE THEN 50 ELSE 0 END +
-              CASE WHEN LATE_NIGHT_INCIDENT = TRUE THEN 15 ELSE 0 END +
-              CASE WHEN MULTI_VEHICLE_COMPLEX = TRUE THEN 20 ELSE 0 END) >= 50 THEN 'MEDIUM RISK'
-        ELSE 'LOW RISK'
-    END as RISK_CATEGORY,
+    -- Risk factors for transparency using efficient logic
+    ARRAY_CONSTRUCT_COMPACT(
+        CASE WHEN AGE < 25 THEN 'Young Driver' END,
+        CASE WHEN AGE > 65 THEN 'Senior Driver' END,
+        CASE WHEN CLAIM_AMOUNT_FILLED > 75000 THEN 'High Claim Amount' END,
+        CASE WHEN FRAUD_REPORTED_FILLED = TRUE THEN 'Fraud History' END
+    ) as RISK_FACTORS,
     
     LAST_UPDATED
     
 FROM ANALYTICS.CUSTOMER_CLAIMS_INTEGRATED;
 
-/*
-================================================================================
-AUTOMATED BUSINESS INTELLIGENCE VIEWS
-================================================================================
-*/
-
--- Real-time fraud detection summary
-CREATE OR REPLACE DYNAMIC TABLE ANALYTICS.FRAUD_DETECTION_SUMMARY
-    TARGET_LAG = '2 minutes'
-    WAREHOUSE = INSURANCE_PIPELINE_COMPUTE_WH
-    AS
-SELECT 
-    FRAUD_REPORTED,
-    RISK_CATEGORY,
-    COUNT(*) as CASE_COUNT,
-    ROUND(AVG(CLAIM_AMOUNT), 2) as AVG_CLAIM_AMOUNT,
-    ROUND(SUM(CLAIM_AMOUNT), 2) as TOTAL_CLAIM_AMOUNT,
-    ROUND(AVG(TOTAL_RISK_SCORE), 2) as AVG_RISK_SCORE,
-    COUNT(DISTINCT POLICY_NUMBER) as UNIQUE_POLICIES,
-    
-    -- Fraud indicators
-    COUNT(CASE WHEN LATE_NIGHT_INCIDENT = TRUE THEN 1 END) as LATE_NIGHT_CASES,
-    COUNT(CASE WHEN MULTI_VEHICLE_COMPLEX = TRUE THEN 1 END) as COMPLEX_CASES,
-    
-    -- Statistical measures
-    ROUND(STDDEV(CLAIM_AMOUNT), 2) as CLAIM_AMOUNT_STDDEV,
-    ROUND(MEDIAN(CLAIM_AMOUNT), 2) as MEDIAN_CLAIM_AMOUNT,
-    
-    MAX(LAST_UPDATED) as LAST_REFRESHED
-    
-FROM ANALYTICS.RISK_SCORE_MATRIX
-GROUP BY FRAUD_REPORTED, RISK_CATEGORY
-ORDER BY FRAUD_REPORTED DESC, RISK_CATEGORY;
-
--- Real-time demographic risk analysis
-CREATE OR REPLACE DYNAMIC TABLE ANALYTICS.DEMOGRAPHIC_RISK_ANALYSIS
-    TARGET_LAG = '2 minutes'
-    WAREHOUSE = INSURANCE_PIPELINE_COMPUTE_WH
-    AS
-SELECT 
-    AGE_CATEGORY,
-    INSURED_SEX,
-    INSURED_EDUCATION_LEVEL,
-    INSURED_OCCUPATION,
-    
-    -- Risk metrics
-    COUNT(*) as TOTAL_CLAIMS,
-    ROUND(AVG(TOTAL_RISK_SCORE), 2) as AVG_RISK_SCORE,
-    ROUND(AVG(CLAIM_AMOUNT), 2) as AVG_CLAIM_AMOUNT,
-    
-    -- Distribution analysis
-    COUNT(CASE WHEN RISK_CATEGORY = 'HIGH RISK' THEN 1 END) as HIGH_RISK_COUNT,
-    COUNT(CASE WHEN RISK_CATEGORY = 'MEDIUM RISK' THEN 1 END) as MEDIUM_RISK_COUNT,
-    COUNT(CASE WHEN RISK_CATEGORY = 'LOW RISK' THEN 1 END) as LOW_RISK_COUNT,
-    
-    -- Fraud correlation
-    COUNT(CASE WHEN FRAUD_REPORTED = TRUE THEN 1 END) as FRAUD_CASES,
-    ROUND((COUNT(CASE WHEN FRAUD_REPORTED = TRUE THEN 1 END) * 100.0) / COUNT(*), 2) as FRAUD_RATE_PCT,
-    
-    -- Financial impact
-    ROUND(SUM(CLAIM_AMOUNT), 2) as TOTAL_EXPOSURE,
-    ROUND(MAX(CLAIM_AMOUNT), 2) as MAX_CLAIM_AMOUNT,
-    
-    MAX(LAST_UPDATED) as LAST_REFRESHED
-    
-FROM ANALYTICS.RISK_SCORE_MATRIX
-GROUP BY AGE_CATEGORY, INSURED_SEX, INSURED_EDUCATION_LEVEL, INSURED_OCCUPATION
-HAVING COUNT(*) >= 2  -- Only show groups with multiple claims
-ORDER BY AVG_RISK_SCORE DESC, TOTAL_EXPOSURE DESC;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
 
 /*
 ================================================================================
-AUTOMATED MONITORING & ALERTING VIEWS
+SECTION 4: AUTOMATIC SENSITIVE DATA CLASSIFICATION
 ================================================================================
 */
 
--- High-risk claims requiring immediate attention
-CREATE OR REPLACE VIEW ANALYTICS.HIGH_RISK_ALERTS AS
+-- Create governance schema for policies
+USE SCHEMA GOVERNANCE;
+
+-- Create a classification profile for automatic sensitive data detection
+CREATE OR REPLACE SNOWFLAKE.DATA_PRIVACY.CLASSIFICATION_PROFILE INSURANCE_CLASSIFICATION_PROFILE(
+    {
+        'minimum_object_age_for_classification_days': 0,
+        'maximum_classification_validity_days': 30,
+        'auto_tag': true
+    }
+);
+
+-- Set the classification profile on the Analytics schema
+ALTER SCHEMA ANALYTICS SET CLASSIFICATION_PROFILE = 'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE';
+
+-- Run classification on our risk scoring table
+CALL SYSTEM$CLASSIFY(
+    'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX',
+    'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE'
+);
+
+-- View classification results
+CALL SYSTEM$GET_CLASSIFICATION_RESULT('MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX');
+
+-- Check what tags were automatically applied
+SELECT 
+    COLUMN_NAME,
+    TAG_NAME,
+    TAG_VALUE
+FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX', 'COLUMN'));
+
+/*
+================================================================================
+SECTION 5: PROGRESSIVE GOVERNANCE - DATA MASKING WITH CLASSIFICATION
+================================================================================
+*/
+
+-- Tag-based masking policy leveraging auto-classification results
+CREATE OR REPLACE MASKING POLICY GOVERNANCE.MASK_SENSITIVE_DATA AS 
+    (sensitive_value NUMBER) RETURNS NUMBER ->
+    CASE
+        -- Internal roles get full access
+        WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN sensitive_value  
+        -- External consumers get masked values for classified sensitive data
+        WHEN CURRENT_ROLE() IN ('MOUNTAINPEAK_PIPELINE_ANALYST') OR 
+             CURRENT_ACCOUNT_NAME() LIKE '%CONSUMER%' THEN FLOOR(sensitive_value / 10000) * 10000
+        ELSE FLOOR(sensitive_value / 10000) * 10000
+    END
+    COMMENT = 'Masks sensitive financial data based on auto-classification';
+
+-- Apply tag-based masking to any columns classified as sensitive
+-- Note: This will automatically apply to columns with SNOWFLAKE.CORE.SEMANTIC_CATEGORY tag
+ALTER TAG SNOWFLAKE.CORE.SEMANTIC_CATEGORY 
+    SET MASKING POLICY GOVERNANCE.MASK_SENSITIVE_DATA;
+
+use role mountainpeak_pipeline_analyst;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
+use role accountadmin;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
+/*
+================================================================================
+SECTION 6: PROGRESSIVE GOVERNANCE - ROW ACCESS CONTROL
+================================================================================
+*/
+
+-- Row access policy for geographic territory restrictions
+CREATE OR REPLACE ROW ACCESS POLICY GOVERNANCE.ALPINE_BROKER_ACCESS AS
+    (customer_state STRING) RETURNS BOOLEAN ->
+    CASE
+        -- Internal roles see all states
+        WHEN CURRENT_ROLE() IN ('ACCOUNTADMIN') THEN TRUE
+        -- Analyst role and external consumers limited to broker territories
+        WHEN CURRENT_ROLE() IN ('MOUNTAINPEAK_PIPELINE_ANALYST') OR
+             CURRENT_ACCOUNT_NAME() LIKE '%CONSUMER%' 
+            THEN customer_state IN ('Colorado', 'Utah', 'Wyoming')
+        ELSE FALSE
+    END
+    COMMENT = 'Restricts broker access to CO/UT/WY territories only';
+
+-- Apply row access policy to risk scoring table
+ALTER TABLE ANALYTICS.RISK_SCORE_MATRIX
+    ADD ROW ACCESS POLICY GOVERNANCE.ALPINE_BROKER_ACCESS ON (CUSTOMER_STATE);
+use role mountainpeak_pipeline_analyst;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
+select distinct customer_state from ANALYTICS.RISK_SCORE_MATRIX;
+use role accountadmin;
+select distinct customer_state from ANALYTICS.RISK_SCORE_MATRIX;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
+
+
+/*
+================================================================================
+SECTION 7: SECURE DATA SHARING - BROKER RISK VIEW
+================================================================================
+*/
+
+USE SCHEMA ANALYTICS;
+
+-- Create curated view for Alpine Risk Brokers
+CREATE OR REPLACE SECURE VIEW ANALYTICS.BROKER_RISK_VIEW 
+    COMMENT = 'Curated risk intelligence for Alpine Risk Brokers with governance applied'
+    AS
 SELECT 
     POLICY_NUMBER,
-    CLAIM_AMOUNT,
+    AGE_CATEGORY,  -- Python UDF result
+    INSURED_OCCUPATION,
+    POLICY_ANNUAL_PREMIUM,
+    CLAIM_AMOUNT_FILLED,  -- Masked to $10K increments
+    CUSTOMER_STATE,       -- Row access limited to CO/UT/WY
     TOTAL_RISK_SCORE,
-    RISK_CATEGORY,
-    FRAUD_REPORTED,
-    INCIDENT_TYPE,
-    INCIDENT_SEVERITY,
-    AGE_CATEGORY,
-    
-    -- Alert reasons
-    CASE 
-        WHEN FRAUD_REPORTED = TRUE AND TOTAL_RISK_SCORE >= 100 THEN 'CRITICAL: Fraud + High Risk Score'
-        WHEN FRAUD_REPORTED = TRUE THEN 'HIGH: Fraud Reported'
-        WHEN TOTAL_RISK_SCORE >= 100 THEN 'HIGH: Risk Score >= 100'
-        WHEN CLAIM_AMOUNT >= 100000 THEN 'HIGH: Claim Amount >= $100K'
-        ELSE 'MEDIUM: Multiple Risk Factors'
-    END as ALERT_REASON,
-    
-    -- Priority scoring
-    CASE 
-        WHEN FRAUD_REPORTED = TRUE AND TOTAL_RISK_SCORE >= 100 THEN 1
-        WHEN FRAUD_REPORTED = TRUE THEN 2
-        WHEN TOTAL_RISK_SCORE >= 100 THEN 3
-        WHEN CLAIM_AMOUNT >= 100000 THEN 4
-        ELSE 5
-    END as ALERT_PRIORITY,
-    
+    RISK_LEVEL,
+    RISK_FACTORS,
     LAST_UPDATED
-    
 FROM ANALYTICS.RISK_SCORE_MATRIX
-WHERE RISK_CATEGORY = 'HIGH RISK' 
-   OR FRAUD_REPORTED = TRUE 
-   OR CLAIM_AMOUNT >= 75000
-ORDER BY ALERT_PRIORITY, TOTAL_RISK_SCORE DESC;
+WHERE CUSTOMER_STATE IS NOT NULL;  -- Ensure clean data for sharing
 
--- Pipeline performance summary
-CREATE OR REPLACE VIEW ANALYTICS.PIPELINE_PERFORMANCE_SUMMARY AS
-SELECT 
-    'REAL-TIME ANALYTICS STATUS' as METRIC_TYPE,
-    COUNT(DISTINCT r.POLICY_NUMBER) as POLICIES_ANALYZED,
-    COUNT(*) as TOTAL_RISK_ASSESSMENTS,
-    ROUND(AVG(r.TOTAL_RISK_SCORE), 2) as AVG_RISK_SCORE,
-    
-    -- Risk distribution
-    COUNT(CASE WHEN r.RISK_CATEGORY = 'HIGH RISK' THEN 1 END) as HIGH_RISK_CASES,
-    COUNT(CASE WHEN r.RISK_CATEGORY = 'MEDIUM RISK' THEN 1 END) as MEDIUM_RISK_CASES,
-    COUNT(CASE WHEN r.RISK_CATEGORY = 'LOW RISK' THEN 1 END) as LOW_RISK_CASES,
-    
-    -- Financial metrics
-    ROUND(SUM(r.CLAIM_AMOUNT), 2) as TOTAL_CLAIM_VALUE,
-    ROUND(AVG(r.CLAIM_AMOUNT), 2) as AVG_CLAIM_VALUE,
-    
-    -- Fraud detection
-    COUNT(CASE WHEN r.FRAUD_REPORTED = TRUE THEN 1 END) as FRAUD_CASES_DETECTED,
-    ROUND((COUNT(CASE WHEN r.FRAUD_REPORTED = TRUE THEN 1 END) * 100.0) / COUNT(*), 2) as FRAUD_DETECTION_RATE,
-    
-    -- Data freshness
-    MAX(r.LAST_UPDATED) as LAST_ANALYTICS_UPDATE,
-    DATEDIFF('MINUTE', MAX(r.LAST_UPDATED), CURRENT_TIMESTAMP()) as MINUTES_SINCE_UPDATE,
-    
-    -- Pipeline health indicator
-    CASE 
-        WHEN DATEDIFF('MINUTE', MAX(r.LAST_UPDATED), CURRENT_TIMESTAMP()) <= 5 THEN 'EXCELLENT'
-        WHEN DATEDIFF('MINUTE', MAX(r.LAST_UPDATED), CURRENT_TIMESTAMP()) <= 15 THEN 'GOOD'
-        WHEN DATEDIFF('MINUTE', MAX(r.LAST_UPDATED), CURRENT_TIMESTAMP()) <= 60 THEN 'ACCEPTABLE'
-        ELSE 'NEEDS ATTENTION'
-    END as PIPELINE_HEALTH_STATUS
-    
-FROM ANALYTICS.RISK_SCORE_MATRIX r;
+use role mountainpeak_pipeline_analyst;
+select * from ANALYTICS.BROKER_RISK_VIEW;
+select distinct customer_state from ANALYTICS.BROKER_RISK_VIEW;
+use role accountadmin;
+select distinct customer_state from ANALYTICS.BROKER_RISK_VIEW;
+select count(1) from analytics.broker_risk_view;
+select * from ANALYTICS.BROKER_RISK_VIEW;
+
+-- Create data share for Alpine Risk Brokers
+CREATE OR REPLACE SHARE ALPINE_RISK_SHARE
+    COMMENT = 'Risk intelligence share for Alpine Risk Brokers';
+
+GRANT USAGE ON DATABASE MOUNTAINPEAK_INSURANCE_PIPELINE_DB TO SHARE ALPINE_RISK_SHARE;
+GRANT USAGE ON SCHEMA ANALYTICS TO SHARE ALPINE_RISK_SHARE;
+GRANT SELECT ON VIEW ANALYTICS.BROKER_RISK_VIEW TO SHARE ALPINE_RISK_SHARE;
 
 /*
 ================================================================================
-ANALYTICAL QUERIES FOR INSIGHTS
+RISK ANALYTICS & GOVERNANCE COMPLETE
 ================================================================================
-*/
+Implementation Complete:
+  • Python UDFs: Efficient risk calculation with 3 specialized functions
+    - CATEGORIZE_DRIVER_AGE: Standardized age groups  
+    - CALCULATE_AGE_RISK_SCORE: Numeric age risk scoring
+    - CALCULATE_TOTAL_RISK_SCORE: Comprehensive risk calculation
+  • Level 1 Dynamic Table: Customer-claims integration (1 min refresh)
+  • Level 2 Dynamic Table: Optimized risk scoring with Python UDFs (1 min refresh)
+  • Progressive Governance: Masking (claim amounts) + Row access (geography)
+  • Secure Sharing: BROKER_RISK_VIEW with applied governance policies
 
--- Top risk factors analysis
-SELECT 
-    'RISK FACTOR ANALYSIS' as ANALYSIS_TYPE,
-    'Current top risk contributors' as DESCRIPTION;
+Business Value Delivered:
+  • Real-time risk intelligence refreshing every minute
+  • Python-powered comprehensive risk analytics with efficient calculation
+  • Territory-appropriate data access for Alpine Risk Brokers
+  • Protected sensitive data while preserving analytical utility
+  • Maintainable code with centralized risk logic in UDFs
 
-SELECT 
-    INCIDENT_TYPE,
-    INCIDENT_SEVERITY,
-    COUNT(*) as CASE_COUNT,
-    ROUND(AVG(TOTAL_RISK_SCORE), 2) as AVG_RISK_SCORE,
-    ROUND(AVG(CLAIM_AMOUNT), 2) as AVG_CLAIM_AMOUNT,
-    COUNT(CASE WHEN FRAUD_REPORTED = TRUE THEN 1 END) as FRAUD_CASES
-FROM ANALYTICS.RISK_SCORE_MATRIX
-GROUP BY INCIDENT_TYPE, INCIDENT_SEVERITY
-ORDER BY AVG_RISK_SCORE DESC, AVG_CLAIM_AMOUNT DESC;
-
--- Real-time claims value analysis by risk category
-SELECT 
-    'CLAIMS VALUE DISTRIBUTION' as ANALYSIS_TYPE,
-    RISK_CATEGORY,
-    COUNT(*) as CLAIM_COUNT,
-    ROUND(SUM(CLAIM_AMOUNT), 2) as TOTAL_VALUE,
-    ROUND(AVG(CLAIM_AMOUNT), 2) as AVG_VALUE,
-    ROUND(MIN(CLAIM_AMOUNT), 2) as MIN_VALUE,
-    ROUND(MAX(CLAIM_AMOUNT), 2) as MAX_VALUE,
-    ROUND(MEDIAN(CLAIM_AMOUNT), 2) as MEDIAN_VALUE
-FROM ANALYTICS.RISK_SCORE_MATRIX
-GROUP BY RISK_CATEGORY
-ORDER BY TOTAL_VALUE DESC;
-
--- Fraud correlation analysis
-SELECT 
-    'FRAUD CORRELATION ANALYSIS' as ANALYSIS_TYPE,
-    FRAUD_REPORTED,
-    RISK_CATEGORY,
-    COUNT(*) as CASES,
-    ROUND(AVG(TOTAL_RISK_SCORE), 2) as AVG_RISK_SCORE,
-    ROUND(SUM(CLAIM_AMOUNT), 2) as TOTAL_EXPOSURE,
-    ROUND(AVG(AGE), 2) as AVG_CUSTOMER_AGE
-FROM ANALYTICS.RISK_SCORE_MATRIX
-GROUP BY FRAUD_REPORTED, RISK_CATEGORY
-ORDER BY FRAUD_REPORTED DESC, AVG_RISK_SCORE DESC;
-
--- Pipeline latency check
-SELECT 
-    'DYNAMIC TABLE REFRESH STATUS' as STATUS_TYPE,
-    CURRENT_TIMESTAMP() as CHECK_TIME,
-    DATEDIFF('MINUTE', MAX(LAST_UPDATED), CURRENT_TIMESTAMP()) as MINUTES_SINCE_LAST_UPDATE,
-    COUNT(DISTINCT POLICY_NUMBER) as ACTIVE_POLICIES,
-    COUNT(*) as ACTIVE_RISK_ASSESSMENTS
-FROM ANALYTICS.RISK_SCORE_MATRIX;
-
-/*
-================================================================================
-RISK ANALYTICS COMPLETE - DYNAMIC TABLES ACTIVE
-================================================================================
-Automated Analytics Ready:
-  • Dynamic Tables refreshing every 1-2 minutes
-  • Real-time risk scoring for all claims
-  • Automated fraud detection analysis
-  • Demographic risk profiling with live updates
-  • High-risk alerts and monitoring views
-
-Analytics Capabilities:
-  • Composite risk scoring algorithm
-  • Real-time fraud correlation analysis
-  • Demographic risk segmentation
-  • Automated alert generation
-  • Pipeline performance monitoring
-
-Next Steps:
-  1. Execute 03_GOVERNANCE_DEMO.sql for progressive security
-  2. Load additional data to see Dynamic Tables refresh
-  3. Monitor automated risk assessments
-
-Ready for: Real-time risk analytics with automated refresh
+Ready for: Live demonstration of automated pipeline with optimized governance
 ================================================================================
 */ 
