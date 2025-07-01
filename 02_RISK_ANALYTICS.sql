@@ -236,24 +236,28 @@ CREATE OR REPLACE SNOWFLAKE.DATA_PRIVACY.CLASSIFICATION_PROFILE INSURANCE_CLASSI
 );
 
 -- Set the classification profile on the Analytics schema
-ALTER SCHEMA ANALYTICS SET CLASSIFICATION_PROFILE = 'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE';
+ALTER SCHEMA ANALYTICS SET CLASSIFICATION_PROFILE = 'GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE';
 
 -- Run classification on our risk scoring table
 CALL SYSTEM$CLASSIFY(
-    'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX',
-    'MOUNTAINPEAK_INSURANCE_PIPELINE_DB.GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE'
+    'ANALYTICS.RISK_SCORE_MATRIX',
+    'GOVERNANCE.INSURANCE_CLASSIFICATION_PROFILE'
 );
 
 -- View classification results
-CALL SYSTEM$GET_CLASSIFICATION_RESULT('MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX');
-
+SELECT SYSTEM$GET_CLASSIFICATION_RESULT('ANALYTICS.RISK_SCORE_MATRIX');
 -- Check what tags were automatically applied
-SELECT 
-    COLUMN_NAME,
-    TAG_NAME,
-    TAG_VALUE
-FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES('MOUNTAINPEAK_INSURANCE_PIPELINE_DB.ANALYTICS.RISK_SCORE_MATRIX', 'COLUMN'));
+SELECT *
+FROM TABLE(
+  INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS(
+    'ANALYTICS.RISK_SCORE_MATRIX',
+    'table'
+));
 
+use role mountainpeak_pipeline_analyst;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
+use role accountadmin;
+select * from ANALYTICS.RISK_SCORE_MATRIX;
 /*
 ================================================================================
 SECTION 5: PROGRESSIVE GOVERNANCE - DATA MASKING WITH CLASSIFICATION
@@ -272,10 +276,9 @@ CREATE OR REPLACE MASKING POLICY GOVERNANCE.MASK_SENSITIVE_DATA AS
         ELSE FLOOR(sensitive_value / 10000) * 10000
     END
     COMMENT = 'Masks sensitive financial data based on auto-classification';
-
--- Apply tag-based masking to any columns classified as sensitive
--- Note: This will automatically apply to columns with SNOWFLAKE.CORE.SEMANTIC_CATEGORY tag
-ALTER TAG SNOWFLAKE.CORE.SEMANTIC_CATEGORY 
+-- Apply masking policy directly to claim amount column
+ALTER TABLE ANALYTICS.RISK_SCORE_MATRIX 
+    MODIFY COLUMN CLAIM_AMOUNT_FILLED 
     SET MASKING POLICY GOVERNANCE.MASK_SENSITIVE_DATA;
 
 use role mountainpeak_pipeline_analyst;
@@ -301,18 +304,16 @@ CREATE OR REPLACE ROW ACCESS POLICY GOVERNANCE.ALPINE_BROKER_ACCESS AS
         ELSE FALSE
     END
     COMMENT = 'Restricts broker access to CO/UT/WY territories only';
-
 -- Apply row access policy to risk scoring table
 ALTER TABLE ANALYTICS.RISK_SCORE_MATRIX
     ADD ROW ACCESS POLICY GOVERNANCE.ALPINE_BROKER_ACCESS ON (CUSTOMER_STATE);
+
 use role mountainpeak_pipeline_analyst;
 select * from ANALYTICS.RISK_SCORE_MATRIX;
 select distinct customer_state from ANALYTICS.RISK_SCORE_MATRIX;
 use role accountadmin;
 select distinct customer_state from ANALYTICS.RISK_SCORE_MATRIX;
 select * from ANALYTICS.RISK_SCORE_MATRIX;
-
-
 /*
 ================================================================================
 SECTION 7: SECURE DATA SHARING - BROKER RISK VIEW
@@ -344,8 +345,6 @@ select * from ANALYTICS.BROKER_RISK_VIEW;
 select distinct customer_state from ANALYTICS.BROKER_RISK_VIEW;
 use role accountadmin;
 select distinct customer_state from ANALYTICS.BROKER_RISK_VIEW;
-select count(1) from analytics.broker_risk_view;
-select * from ANALYTICS.BROKER_RISK_VIEW;
 
 -- Create data share for Alpine Risk Brokers
 CREATE OR REPLACE SHARE ALPINE_RISK_SHARE
@@ -368,14 +367,12 @@ Implementation Complete:
   • Level 2 Dynamic Table: Optimized risk scoring with Python UDFs (1 min refresh)
   • Progressive Governance: Masking (claim amounts) + Row access (geography)
   • Secure Sharing: BROKER_RISK_VIEW with applied governance policies
-
 Business Value Delivered:
   • Real-time risk intelligence refreshing every minute
   • Python-powered comprehensive risk analytics with efficient calculation
   • Territory-appropriate data access for Alpine Risk Brokers
   • Protected sensitive data while preserving analytical utility
   • Maintainable code with centralized risk logic in UDFs
-
 Ready for: Live demonstration of automated pipeline with optimized governance
 ================================================================================
 */ 
